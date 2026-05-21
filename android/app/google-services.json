@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "225996092671",
+    "project_id": "pppdui-vmjj8r",
+    "storage_bucket": "pppdui-vmjj8r.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:225996092671:android:e0111a5b5856886c9ac8ca",
+        "android_client_info": {
+          "package_name": "com.mycompany.pppdui"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAIEdoF4jfRWc0yYSiYnf5356zUO1pkVD4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
