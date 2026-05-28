@@ -4,22 +4,17 @@ import 'about_sound_widget.dart' show AboutSoundWidget;
 import 'package:flutter/material.dart';
 
 class AboutSoundModel extends FlutterFlowModel<AboutSoundWidget> {
-  ///  State fields for stateful widgets in this page.
-
-  // State field(s) for DropDown widget.
-  String? dropDownValue;
-  FormFieldController<String>? dropDownValueController;
-  // State field(s) for TextField widget.
+  String? mainCategoryValue;
+  FormFieldController<String>? mainCategoryValueController;
+  String? detailCategoryValue;
+  FormFieldController<String>? detailCategoryValueController;
+  String? soundDetailValue;
+  FormFieldController<String>? soundDetailValueController;
   FocusNode? textFieldFocusNode;
   TextEditingController? textController;
   String? Function(BuildContext, String?)? textControllerValidator;
-
   @override
   void initState(BuildContext context) {}
-
   @override
-  void dispose() {
-    textFieldFocusNode?.dispose();
-    textController?.dispose();
-  }
+  void dispose() { textFieldFocusNode?.dispose(); textController?.dispose(); }
 }

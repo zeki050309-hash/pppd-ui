@@ -1,80 +1,51 @@
-import '/flutter_flow/flutter_flow_theme.dart';
+
 import '/flutter_flow/flutter_flow_util.dart';
+import '/shared/pppd_design.dart';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'alert_model.dart';
 export 'alert_model.dart';
 
 class AlertWidget extends StatefulWidget {
   const AlertWidget({super.key});
-
   static String routeName = 'alert';
   static String routePath = '/alert';
-
   @override
   State<AlertWidget> createState() => _AlertWidgetState();
 }
 
 class _AlertWidgetState extends State<AlertWidget> {
   late AlertModel _model;
-
   final scaffoldKey = GlobalKey<ScaffoldState>();
-
   @override
-  void initState() {
-    super.initState();
-    _model = createModel(context, () => AlertModel());
-
-    WidgetsBinding.instance.addPostFrameCallback((_) => safeSetState(() {}));
-  }
-
+  void initState() { super.initState(); _model = createModel(context, () => AlertModel()); WidgetsBinding.instance.addPostFrameCallback((_) => safeSetState(() {})); }
   @override
-  void dispose() {
-    _model.dispose();
-
-    super.dispose();
-  }
+  void dispose() { _model.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () {
-        FocusScope.of(context).unfocus();
-        FocusManager.instance.primaryFocus?.unfocus();
-      },
-      child: Scaffold(
-        key: scaffoldKey,
-        backgroundColor: FlutterFlowTheme.of(context).primaryBackground,
-        appBar: AppBar(
-          backgroundColor: FlutterFlowTheme.of(context).primary,
-          automaticallyImplyLeading: false,
-          title: Text(
-            'Page Title',
-            style: FlutterFlowTheme.of(context).headlineMedium.override(
-                  font: GoogleFonts.interTight(
-                    fontWeight:
-                        FlutterFlowTheme.of(context).headlineMedium.fontWeight,
-                    fontStyle:
-                        FlutterFlowTheme.of(context).headlineMedium.fontStyle,
-                  ),
-                  color: Colors.white,
-                  fontSize: 22.0,
-                  letterSpacing: 0.0,
-                  fontWeight:
-                      FlutterFlowTheme.of(context).headlineMedium.fontWeight,
-                  fontStyle:
-                      FlutterFlowTheme.of(context).headlineMedium.fontStyle,
+      onTap: () { FocusScope.of(context).unfocus(); FocusManager.instance.primaryFocus?.unfocus(); },
+      child: PppdScaffold(
+        title: '알림',
+        subtitle: '위험 신호와 감지된 소리를 확인해요.',
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 34, 20, 28),
+          child: PppdSectionCard(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 84,
+                  height: 84,
+                  decoration: BoxDecoration(color: PppdColors.softPurple, borderRadius: BorderRadius.circular(28)),
+                  child: const Icon(Icons.notifications_none_rounded, size: 42, color: PppdColors.purple),
                 ),
-          ),
-          actions: [],
-          centerTitle: false,
-          elevation: 2.0,
-        ),
-        body: SafeArea(
-          top: true,
-          child: Column(
-            mainAxisSize: MainAxisSize.max,
-            children: [],
+                const SizedBox(height: 18),
+                Text('아직 새로운 알림이 없어요', style: pppdText(size: 21, weight: FontWeight.w900), textAlign: TextAlign.center),
+                const SizedBox(height: 8),
+                Text('위험 장소나 중요한 소리가 감지되면 여기에 알림이 표시될 예정이에요.', style: pppdText(size: 14, color: PppdColors.muted, height: 1.45), textAlign: TextAlign.center),
+              ],
+            ),
           ),
         ),
       ),
