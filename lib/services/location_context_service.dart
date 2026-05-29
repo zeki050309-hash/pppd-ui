@@ -92,10 +92,11 @@ class LocationContextService extends ChangeNotifier {
   static Map<String, String> get allContextLabels => _contextLabels;
 
   // ── Firestore에서 위험 지점 로드 ─────────────────────────────────
+  // map_widget.dart가 읽는 'danger_places'와 동일한 컬렉션 사용
   Future<void> _loadDangerZones() async {
     try {
       final snap = await FirebaseFirestore.instance
-          .collection('danger_zones')
+          .collection('danger_places')
           .orderBy('count', descending: true)
           .limit(50)
           .get();
@@ -126,14 +127,14 @@ class LocationContextService extends ChangeNotifier {
       if (nearby.isNotEmpty) {
         final zone = nearby.first;
         await FirebaseFirestore.instance
-            .collection('danger_zones')
+            .collection('danger_places')
             .doc(zone.id)
             .update({
           'count':   FieldValue.increment(1),
           'last_at': FieldValue.serverTimestamp(),
         });
       } else {
-        await FirebaseFirestore.instance.collection('danger_zones').add({
+        await FirebaseFirestore.instance.collection('danger_places').add({
           'location': GeoPoint(lat, lng),
           'label':    label,
           'count':    1,

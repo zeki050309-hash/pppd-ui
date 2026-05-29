@@ -9,6 +9,181 @@ import 'package:provider/provider.dart';
 import 'about_sound_model.dart';
 export 'about_sound_model.dart';
 
+// ── 등록된 소리 관리 위젯 ─────────────────────────────────────────
+class RegisteredPromptsPanel extends StatefulWidget {
+  const RegisteredPromptsPanel({super.key});
+
+  @override
+  State<RegisteredPromptsPanel> createState() => _RegisteredPromptsPanelState();
+}
+
+class _RegisteredPromptsPanelState extends State<RegisteredPromptsPanel> {
+  List<Map<String, dynamic>> _prompts = [];
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final svc = context.read<PromptEarService>();
+    if (!svc.serverConnected) return;
+    setState(() => _loading = true);
+    try {
+      final list = await svc.fetchPrompts();
+      if (mounted) setState(() { _prompts = list; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final svc = context.watch<PromptEarService>();
+
+    return PppdSectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text('등록된 소리 목록', style: pppdText(size: 18, weight: FontWeight.w900)),
+              const Spacer(),
+              if (_loading)
+                const SizedBox(width: 18, height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: PppdColors.purple))
+              else
+                IconButton(
+                  icon: const Icon(Icons.refresh_rounded, size: 18, color: PppdColors.purple),
+                  onPressed: _refresh,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          if (!svc.serverConnected)
+            Text('서버 연결 후 목록을 확인할 수 있어요.', style: pppdText(size: 13, color: PppdColors.muted))
+          else if (_prompts.isEmpty)
+            Text('등록된 소리가 없어요.', style: pppdText(size: 13, color: PppdColors.muted))
+          else
+            ..._prompts.map((p) => _PromptTile(
+              data:      p,
+              onToggle:  () async {
+                await svc.togglePrompt(p['prompt_id'] as String);
+                _refresh();
+              },
+              onDelete:  () async {
+                final ok = await showDialog<bool>(
+                  context: context,
+                  builder: (c) => AlertDialog(
+                    title: const Text('삭제 확인'),
+                    content: Text("'${p['description']}' 소리를 삭제할까요?"),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('취소')),
+                      TextButton(
+                        onPressed: () => Navigator.pop(c, true),
+                        child: const Text('삭제', style: TextStyle(color: PppdColors.danger)),
+                      ),
+                    ],
+                  ),
+                );
+                if (ok == true) {
+                  await svc.deletePrompt(p['prompt_id'] as String);
+                  _refresh();
+                }
+              },
+            )),
+        ],
+      ),
+    );
+  }
+}
+
+class _PromptTile extends StatelessWidget {
+  const _PromptTile({required this.data, required this.onToggle, required this.onDelete});
+  final Map<String, dynamic> data;
+  final VoidCallback onToggle;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled       = data['enabled'] as bool? ?? true;
+    final coveredByYamnet = data['covered_by_yamnet'] as bool? ?? false;
+    final yamnetClass   = data['yamnet_class']  as String?;
+    final riskLevel     = data['risk_level']    as String? ?? '';
+
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: enabled ? Colors.white : const Color(0xFFF5F5F5),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: enabled ? PppdColors.purple.withOpacity(0.2) : Colors.grey.withOpacity(0.2),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  data['description'] as String? ?? '',
+                  style: pppdText(
+                    size: 14, weight: FontWeight.w700,
+                    color: enabled ? PppdColors.text : PppdColors.muted,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Wrap(spacing: 6, children: [
+                  if (coveredByYamnet && yamnetClass != null)
+                    _chip('YAMNet: $yamnetClass', PppdColors.purple)
+                  else
+                    _chip('CLAP 추론', const Color(0xFF4B9EFF)),
+                  if (riskLevel.isNotEmpty) _chip(riskLevel, _riskColor(riskLevel)),
+                ]),
+              ],
+            ),
+          ),
+          // on/off 토글
+          Switch(
+            value: enabled,
+            onChanged: (_) => onToggle(),
+            activeColor: PppdColors.safe,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          // 삭제
+          IconButton(
+            icon: const Icon(Icons.delete_outline_rounded, size: 20, color: PppdColors.muted),
+            onPressed: onDelete,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chip(String label, Color color) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+    decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(6)),
+    child: Text(label, style: pppdText(size: 11, color: color, weight: FontWeight.w600)),
+  );
+
+  Color _riskColor(String risk) {
+    switch (risk) {
+      case 'high':        return PppdColors.danger;
+      case 'medium_high': return PppdColors.warning;
+      case 'low':         return PppdColors.muted;
+      default:            return PppdColors.muted;
+    }
+  }
+}
+
 class AboutSoundWidget extends StatefulWidget {
   const AboutSoundWidget({super.key});
   static String routeName = 'AboutSound';
@@ -155,10 +330,18 @@ class _AboutSoundWidgetState extends State<AboutSoundWidget> {
 
       final classification = result['classification'] as Map<String, dynamic>? ?? {};
       final category    = classification['category']    ?? '미분류';
-      final coveredBy   = classification['covered_by_yamnet'] == true
-          ? '\n\n※ YAMNet이 이미 인식 가능한 소리예요. CLAP 비교 대신 YAMNet으로 처리됩니다.'
-          : '';
       final risk        = classification['risk_level']  ?? '';
+      final covered     = classification['covered_by_yamnet'] == true;
+      final yamnetClass = classification['yamnet_class'] as String?;
+      final duplicates  = result['duplicate_warning'] as List?;
+
+      final coveredNote = covered && yamnetClass != null
+          ? '\n\n✅ YAMNet 클래스 "$yamnetClass"에 해당해요.\n해당 소리가 감지되면 자동으로 진동합니다.'
+          : '\n\nℹ️ CLAP 추론으로 매칭합니다.';
+
+      final dupNote = (duplicates != null && duplicates.isNotEmpty)
+          ? '\n\n⚠️ 유사하게 등록된 소리 있음:\n"${(duplicates.first as Map)['description']}"'
+          : '';
 
       if (context.mounted) {
         await showDialog(
@@ -166,7 +349,7 @@ class _AboutSoundWidgetState extends State<AboutSoundWidget> {
           builder: (c) => AlertDialog(
             title: const Text('등록 완료'),
             content: Text(
-              '소리: $selectedSoundSummary\n카테고리: $category  |  위험도: $risk$coveredBy',
+              '소리: $selectedSoundSummary\n카테고리: $category  |  위험도: $risk$coveredNote$dupNote',
             ),
             actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('확인'))],
           ),
@@ -205,6 +388,8 @@ class _AboutSoundWidgetState extends State<AboutSoundWidget> {
             ])),
             const SizedBox(height: 24),
             PppdPrimaryButton(text: '등록', icon: Icons.check_rounded, onTap: _handleRegister),
+            const SizedBox(height: 28),
+            const RegisteredPromptsPanel(),
           ]),
         ),
       ),

@@ -111,6 +111,7 @@ flutter:
   assets:
     - assets/fonts/
     - assets/images/
+    - assets/images/images/   # pppd-ui 원본 경로 호환
     - assets/videos/
     - assets/audios/
     - assets/rive_animations/

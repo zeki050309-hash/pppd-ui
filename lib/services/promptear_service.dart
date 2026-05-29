@@ -122,13 +122,6 @@ class PromptEarService extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> startListening() async {
     if (isListening) return;
 
-    // 웹에서는 오디오 기능이 제한적 — 서버 통신만 시뮬레이션
-    if (kIsWeb) {
-      isListening = true;
-      notifyListeners();
-      return;
-    }
-
     final hasPermission = await _recorder.hasPermission();
     if (!hasPermission) return;
 
@@ -181,7 +174,7 @@ class PromptEarService extends ChangeNotifier with WidgetsBindingObserver {
     _audioStreamSub = null;
     _ampSub?.cancel();
     _ampSub = null;
-    if (!kIsWeb) await _recorder.stop();
+    try { await _recorder.stop(); } catch (_) {}
     _audioBuffer.clear();
     isListening = false;
     currentDb   = 0.0;
@@ -317,6 +310,14 @@ class PromptEarService extends ChangeNotifier with WidgetsBindingObserver {
   Future<bool> deletePrompt(String promptId) async {
     final res = await http
         .delete(Uri.parse('$serverUrl/prompt/$promptId'))
+        .timeout(const Duration(seconds: 5));
+    return res.statusCode == 200;
+  }
+
+  // 진동 on/off 토글
+  Future<bool> togglePrompt(String promptId) async {
+    final res = await http
+        .patch(Uri.parse('$serverUrl/prompt/$promptId/toggle'))
         .timeout(const Duration(seconds: 5));
     return res.statusCode == 200;
   }

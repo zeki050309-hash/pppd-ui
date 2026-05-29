@@ -241,8 +241,27 @@ prompt_store: dict[str, dict[str, Any]] = {}
 
 
 def save_prompts() -> None:
+    serializable = {}
+    for pid, d in prompt_store.items():
+        serializable[pid] = {
+            "description":        d.get("description"),
+            "embedding":          d.get("embedding"),
+            "category":           d.get("category", "unknown"),
+            "sub_category":       d.get("sub_category"),
+            "covered_by_yamnet":  d.get("covered_by_yamnet", False),
+            "yamnet_class":       d.get("yamnet_class"),
+            "yamnet_class_idx":   d.get("yamnet_class_idx"),   # 빠른 매칭용 인덱스
+            "parent_node":        d.get("parent_node"),
+            "alert_prior":        d.get("alert_prior", 0.5),
+            "context_alert_prior":d.get("context_alert_prior", {}),
+            "prior_source":       d.get("prior_source", ""),
+            "prior_reason":       d.get("prior_reason", ""),
+            "risk_level":         d.get("risk_level", "medium"),
+            "enabled":            d.get("enabled", True),      # 진동 on/off
+            "created_at_unix":    d.get("created_at_unix", time.time()),
+        }
     with open(PROMPTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(prompt_store, f, ensure_ascii=False, indent=2)
+        json.dump(serializable, f, ensure_ascii=False, indent=2)
 
 
 def _migrate_embedding(raw: Any) -> list[float]:
@@ -450,11 +469,52 @@ def get_animal_subcategory(label: str) -> str | None:
     return None
 
 
+def check_duplicate_prompts(
+    new_text: str,
+    new_emb: np.ndarray,
+    threshold: float = 0.88,
+) -> list[dict[str, Any]]:
+    """
+    새 프롬프트가 기존 등록 프롬프트와 유사한지 CLAP 텍스트 임베딩으로 비교.
+    유사도 >= threshold이면 해당 항목 리스트 반환.
+    """
+    duplicates = []
+    for pid, data in prompt_store.items():
+        emb = data.get("embedding")
+        if not emb:
+            continue
+        ref = np.array(emb, dtype=np.float32)
+        ref = ref / (np.linalg.norm(ref) + 1e-9)
+        sim = float(np.dot(new_emb, ref))
+        if sim >= threshold:
+            duplicates.append({
+                "prompt_id":   pid,
+                "description": data.get("description", ""),
+                "similarity":  round(sim, 4),
+            })
+    return sorted(duplicates, key=lambda x: x["similarity"], reverse=True)
+
+
+def get_enabled_yamnet_classes() -> dict[int, str]:
+    """
+    covered_by_yamnet=True이고 enabled=True인 프롬프트의
+    {yamnet_class_idx: prompt_id} 맵 반환.
+    (분석 시 빠른 룩업에 사용)
+    """
+    result: dict[int, str] = {}
+    for pid, data in prompt_store.items():
+        if (data.get("covered_by_yamnet") and
+                data.get("enabled", True) and
+                data.get("yamnet_class_idx") is not None):
+            result[int(data["yamnet_class_idx"])] = pid
+    return result
+
+
 # ───────────────────────────────────────────────────────────────
 # LLM: 온톨로지 분류 + U/X prior 추정 (Claude 단일 호출)
 # ───────────────────────────────────────────────────────────────
 
-# API 없을 때 키워드 폴백 (두 파일의 fallback 통합)
+# API 없을 때 키워드 폴백
 _KEYWORD_MAP: list[tuple[list[str], str, str | None]] = [
     (["dog", "개", "bark", "howl", "woof"],                    "animal",    "dog"),
     (["cat", "고양이", "meow", "purr", "hiss"],                "animal",    "cat"),
@@ -470,6 +530,46 @@ _KEYWORD_MAP: list[tuple[list[str], str, str | None]] = [
     (["machine", "기계", "engine", "엔진", "alarm", "알람"],    "machinery", None),
     (["explosion", "폭발", "gunshot", "총", "bang"],            "weapon",    None),
 ]
+
+# YAMNet에 이미 있는 주요 소리 → (yamnet_class_name, yamnet_class_idx)
+# (확장 가능 — 자주 등록될 만한 소리들 선제 목록)
+_YAMNET_COVERAGE_MAP: dict[str, tuple[str, int]] = {
+    # 악기
+    "violin": ("Violin, fiddle", 186), "바이올린": ("Violin, fiddle", 186),
+    "piano": ("Piano", 148), "피아노": ("Piano", 148),
+    "guitar": ("Guitar", 135), "기타": ("Guitar", 135),
+    "drum": ("Drum", 159), "드럼": ("Drum", 159),
+    "saxophone": ("Saxophone", 192), "색소폰": ("Saxophone", 192),
+    "trumpet": ("Trumpet", 182), "트럼펫": ("Trumpet", 182),
+    "cello": ("Cello", 188), "첼로": ("Cello", 188),
+    "flute": ("Flute", 191), "플루트": ("Flute", 191),
+    # 동물
+    "dog": ("Dog", 69), "개": ("Dog", 69),
+    "bark": ("Bark", 70), "짖": ("Bark", 70),
+    "cat": ("Cat", 76), "고양이": ("Cat", 76),
+    "meow": ("Meow", 78), "야옹": ("Meow", 78),
+    "bird": ("Bird", 106), "새": ("Bird", 106),
+    "chirp": ("Chirp, tweet", 108), "짹": ("Chirp, tweet", 108),
+    # 긴급
+    "siren": ("Siren", 390), "사이렌": ("Siren", 390),
+    "fire alarm": ("Fire alarm", 394), "화재경보": ("Fire alarm", 394),
+    "smoke detector": ("Smoke detector, smoke alarm", 393), "연기감지": ("Smoke detector, smoke alarm", 393),
+    "car alarm": ("Car alarm", 304), "자동차경보": ("Car alarm", 304),
+    "ambulance": ("Ambulance (siren)", 318), "구급차": ("Ambulance (siren)", 318),
+    "gunshot": ("Gunshot, gunfire", 421), "총소리": ("Gunshot, gunfire", 421),
+    "scream": ("Screaming", 11), "비명": ("Screaming", 11),
+    # 생활
+    "doorbell": ("Doorbell", 349), "초인종": ("Doorbell", 349),
+    "knock": ("Knock", 353), "노크": ("Knock", 353),
+    "baby": ("Baby cry, infant cry", 20), "아기": ("Baby cry, infant cry", 20),
+    "cry": ("Crying, sobbing", 19), "울음": ("Crying, sobbing", 19),
+    "cough": ("Cough", 42), "기침": ("Cough", 42),
+    "sneeze": ("Sneeze", 44), "재채기": ("Sneeze", 44),
+    "rain": ("Rain", 283), "비": ("Rain", 283),
+    "thunder": ("Thunder", 281), "천둥": ("Thunder", 281),
+    "phone": ("Telephone bell ringing", 384), "전화": ("Telephone bell ringing", 384),
+    "alarm clock": ("Alarm clock", 389), "알람": ("Alarm clock", 389),
+}
 
 _HIGH_RISK_KW   = ["siren","alarm","fire","smoke","scream","glass break","gunshot",
                    "crash","horn","ambulance","emergency","explosion"]
@@ -521,11 +621,19 @@ def _fallback_classify_and_estimate(
             x += 0.12
         x_by_context[ctx] = round(clamp01(x), 4)
 
+    # YAMNet 커버리지 확인 (fallback에서도 주요 소리는 감지)
+    covered, yamnet_class, yamnet_class_idx = False, None, None
+    for kw, (cls_name, cls_idx) in _YAMNET_COVERAGE_MAP.items():
+        if kw in desc:
+            covered, yamnet_class, yamnet_class_idx = True, cls_name, cls_idx
+            break
+
     return {
         "category":           category,
         "sub_category":       sub_category,
-        "covered_by_yamnet":  False,
-        "yamnet_class":       None,
+        "covered_by_yamnet":  covered,
+        "yamnet_class":       yamnet_class,
+        "yamnet_class_idx":   yamnet_class_idx,
         "parent_node":        category.capitalize() if category != "unknown" else None,
         "alert_prior_u":      round(clamp01(u), 4),
         "context_alert_prior":x_by_context,
@@ -822,15 +930,26 @@ def list_prompts():
                 "sub_category":        d.get("sub_category"),
                 "covered_by_yamnet":   d.get("covered_by_yamnet", False),
                 "yamnet_class":        d.get("yamnet_class"),
+                "yamnet_class_idx":    d.get("yamnet_class_idx"),
                 "parent_node":         d.get("parent_node"),
                 "alert_prior":         d.get("alert_prior"),
-                "context_alert_prior": d.get("context_alert_prior"),
                 "risk_level":          d.get("risk_level"),
                 "prior_reason":        d.get("prior_reason"),
+                "enabled":             d.get("enabled", True),
             }
             for pid, d in prompt_store.items()
         ]
     }
+
+
+@app.patch("/prompt/{prompt_id}/toggle")
+def toggle_prompt(prompt_id: str):
+    """프롬프트 진동 on/off 토글"""
+    if prompt_id not in prompt_store:
+        raise HTTPException(status_code=404, detail="프롬프트를 찾을 수 없습니다.")
+    prompt_store[prompt_id]["enabled"] = not prompt_store[prompt_id].get("enabled", True)
+    save_prompts()
+    return {"success": True, "enabled": prompt_store[prompt_id]["enabled"]}
 
 
 @app.post("/prompt/register")
@@ -853,18 +972,22 @@ def register_prompt(req: PromptRegisterRequest):
         classification = classify_and_estimate_with_llm(req.description, contexts)
 
     print(f"  분류: {classification.get('category')}/{classification.get('sub_category')}, "
-          f"U={classification.get('alert_prior_u')}, risk={classification.get('risk_level')}", flush=True)
+          f"covered={classification.get('covered_by_yamnet')}, "
+          f"yamnet_class='{classification.get('yamnet_class')}'", flush=True)
 
-    if classification.get("covered_by_yamnet"):
-        print(f"  → YAMNet 클래스 '{classification.get('yamnet_class')}'로 이미 커버 (CLAP 비교 제외)", flush=True)
-
-    # 2. CLAP 텍스트 인코더로 임베딩 생성 (AudioGen 불필요)
+    # 2. CLAP 텍스트 임베딩 생성
     try:
         text_emb = get_clap_text_embedding(req.description)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"텍스트 임베딩 실패: {e}")
 
-    # 3. 저장
+    # 3. 기존 프롬프트와 유사도 비교 (중복 감지)
+    duplicates = check_duplicate_prompts(req.description, text_emb, threshold=0.88)
+    if duplicates:
+        best = duplicates[0]
+        print(f"  → 유사 프롬프트 발견: '{best['description']}' (유사도 {best['similarity']:.3f})", flush=True)
+
+    # 4. 저장 (enabled=True 기본)
     prompt_store[req.prompt_id] = {
         "description":        req.description,
         "embedding":          text_emb.tolist(),
@@ -872,21 +995,25 @@ def register_prompt(req: PromptRegisterRequest):
         "sub_category":       classification.get("sub_category"),
         "covered_by_yamnet":  classification.get("covered_by_yamnet", False),
         "yamnet_class":       classification.get("yamnet_class"),
+        "yamnet_class_idx":   classification.get("yamnet_class_idx"),
         "parent_node":        classification.get("parent_node"),
         "alert_prior":        classification.get("alert_prior_u", 0.5),
         "context_alert_prior":classification.get("context_alert_prior", {}),
         "prior_source":       classification.get("source", "unknown"),
         "prior_reason":       classification.get("reason", ""),
         "risk_level":         classification.get("risk_level", "medium"),
+        "enabled":            True,
         "created_at_unix":    time.time(),
     }
     save_prompts()
 
     return {
-        "success":        True,
-        "prompt_id":      req.prompt_id,
-        "description":    req.description,
-        "classification": {k: v for k, v in classification.items() if k != "source"},
+        "success":          True,
+        "prompt_id":        req.prompt_id,
+        "description":      req.description,
+        "classification":   {k: v for k, v in classification.items() if k != "source"},
+        # 기존 프롬프트와 유사한 게 있으면 경고
+        "duplicate_warning": duplicates if duplicates else None,
     }
 
 
@@ -910,82 +1037,93 @@ def clear_all_prompts():
 
 @app.post("/analyze")
 def analyze_audio(req: AudioAnalyzeRequest):
+    """
+    새 알림 로직:
+      진동(should_alert=True) 조건은 딱 두 가지만
+        1. 등록 프롬프트 매칭 (enabled=True인 것)
+           - covered_by_yamnet=True  → YAMNet top-k에 해당 클래스가 있으면 즉시
+           - covered_by_yamnet=False → 모호할 때 CLAP 서브트리 비교로 매칭 시
+        2. 긴급 소리 (URGENT_LABELS) — 항상
+      그 외 모든 소리는 로그만 남기고 진동 없음.
+    """
     if not req.audio:
         raise HTTPException(status_code=400, detail="audio가 비어 있습니다.")
 
     audio = normalize_audio(np.array(req.audio, dtype=np.float32))
+    audio_16k = resample_audio(audio, req.sample_rate, 16000)
 
     # ── 1단계: YAMNet 분류 ─────────────────────────────────────────
-    audio_16k    = resample_audio(audio, req.sample_rate, 16000)
     yamnet_result = run_yamnet(audio_16k)
-
-    # ── 공통 오디오 특성 (Model A+ 공통 입력) ──────────────────────
     S = compute_normalized_snr(audio)
     L = compute_normalized_loudness(audio)
-
-    # ── 긴급 소리: 안전 우선 즉시 반환 ────────────────────────────
-    if yamnet_result["is_urgent"] and yamnet_result["confidence"] > URGENT_CONF_THRESH:
-        U, u_info = get_sound_alert_prior(yamnet_result["label"], None)
-        X, x_info = get_context_alert_prior(
-            yamnet_result["label"], req.context, None, fallback_u=U
-        )
-        alert_model = calculate_alert_probability(
-            C=yamnet_result["confidence"], U=U, S=S, X=X, L=L
-        )
-        alert_model["should_alert"] = True  # 긴급 소리는 Model A+ 결과 무관 항상 알림
-
-        return {
-            "yamnet":      yamnet_result,
-            "clap":        None,
-            "primary": {
-                "label":      yamnet_result["label"],
-                "confidence": yamnet_result["confidence"],
-                "source":     "yamnet",
-                "priority":   "urgent",
-                "prompt_id":  None,
-                "category":   yamnet_result["category"],
-            },
-            "context":     req.context,
-            "alert_model": alert_model,
-            "prior_info":  {"U": u_info, "X": x_info},
-            "should_alert":True,
-        }
-
-    # ── 2단계: 모호성 판단 → CLAP 서브트리 비교 ───────────────────
     category    = yamnet_result["category"]
-    sub_category = get_animal_subcategory(yamnet_result["label"]) if category == "animal" else None
+    top_label   = yamnet_result["label"]
+    top_conf    = yamnet_result["confidence"]
 
-    is_ambiguous = (
-        yamnet_result["is_parent_node"]
-        or yamnet_result["subtree_top2_margin"] < AMBIGUITY_MARGIN
-        or yamnet_result["confidence"] < YAMNET_MID
-    )
+    clap_result  = None
+    matched_pid: str | None = None
+    should_alert = False
+    alert_reason = "no_match"
 
-    clap_result = None
-    if prompt_store and category != "unknown" and is_ambiguous:
-        audio_48k   = resample_audio(audio, req.sample_rate, 48000)
-        clap_result = run_clap_in_subtree(audio_48k, category, sub_category)
+    # ── 2단계: 긴급 소리 감지 ──────────────────────────────────────
+    if yamnet_result["is_urgent"] and top_conf > URGENT_CONF_THRESH:
+        should_alert = True
+        alert_reason = "urgent"
 
-    # ── 3단계: 대표 라벨 선택 ──────────────────────────────────────
+    # ── 3단계: YAMNet 클래스로 커버되는 등록 프롬프트 매칭 ─────────
+    if not should_alert:
+        # top-5에서 등록된 YAMNet 클래스 룩업
+        yamnet_class_map = get_enabled_yamnet_classes()   # {class_idx: prompt_id}
+        for entry in yamnet_result.get("top5", []):
+            idx = YAMNET_LABEL_TO_IDX.get(entry["label"], -1)
+            if idx in yamnet_class_map and entry["score"] > URGENT_CONF_THRESH:
+                matched_pid  = yamnet_class_map[idx]
+                should_alert = True
+                alert_reason = f"yamnet_class_match:{entry['label']}"
+                break
+
+    # ── 4단계: CLAP 서브트리 비교 (미등록/미커버 프롬프트) ──────────
+    if not should_alert and prompt_store and category != "unknown":
+        is_ambiguous = (
+            yamnet_result["is_parent_node"]
+            or yamnet_result["subtree_top2_margin"] < AMBIGUITY_MARGIN
+            or top_conf < YAMNET_MID
+        )
+        if is_ambiguous:
+            sub_cat = get_animal_subcategory(top_label) if category == "animal" else None
+            audio_48k   = resample_audio(audio, req.sample_rate, 48000)
+            clap_result = run_clap_in_subtree(audio_48k, category, sub_cat)
+            if clap_result:
+                matched_pid  = clap_result["prompt_id"]
+                should_alert = True
+                alert_reason = "clap_match"
+
+    # ── 5단계: 대표 라벨 선택 ──────────────────────────────────────
     primary = choose_primary_sound(yamnet_result, clap_result)
+    if matched_pid and matched_pid in prompt_store:
+        primary["prompt_id"] = matched_pid
 
-    # ── 4단계: Model A+ 알림 확률 계산 ─────────────────────────────
+    # ── 6단계: Model A+ (참고용 — 알림 여부는 위에서 이미 결정) ──────
     U, u_info = get_sound_alert_prior(primary["label"], primary.get("prompt_id"))
     X, x_info = get_context_alert_prior(
         primary["label"], req.context, primary.get("prompt_id"), fallback_u=U
     )
     alert_model = calculate_alert_probability(
-        C=yamnet_result["confidence"], U=U, S=S, X=X, L=L
+        C=top_conf, U=U, S=S, X=X, L=L
     )
+    # 최종 should_alert는 위의 명시적 로직이 우선
+    alert_model["should_alert"] = should_alert
+    alert_model["alert_reason"] = alert_reason
 
     return {
-        "yamnet":      yamnet_result,
-        "clap":        clap_result,
-        "primary":     primary,
-        "context":     req.context,
-        "alert_model": alert_model,
-        "prior_info":  {"U": u_info, "X": x_info},
-        "should_alert":alert_model["should_alert"],
+        "yamnet":       yamnet_result,
+        "clap":         clap_result,
+        "primary":      primary,
+        "context":      req.context,
+        "alert_model":  alert_model,
+        "prior_info":   {"U": u_info, "X": x_info},
+        "should_alert": should_alert,
+        "alert_reason": alert_reason,
     }
 
 
