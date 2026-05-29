@@ -304,6 +304,13 @@ class PromptEarService extends ChangeNotifier with WidgetsBindingObserver {
       headers: {'Content-Type': 'application/json'},
       body:    jsonEncode({'prompt_id': promptId, 'description': description}),
     ).timeout(const Duration(seconds: 30));
+
+    // HTTP 에러를 명시적으로 처리해 원인을 알 수 있도록
+    if (res.statusCode != 200) {
+      Map<String, dynamic> err = {};
+      try { err = jsonDecode(res.body) as Map<String, dynamic>; } catch (_) {}
+      throw Exception('서버 오류 (${res.statusCode}): ${err['detail'] ?? res.body}');
+    }
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 

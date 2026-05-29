@@ -282,7 +282,7 @@ def load_prompts() -> None:
         raw = json.load(f)
 
     migrated = 0
-    for pid, data in raw.items():
+    for _, data in raw.items():
         emb = data.get("embedding")
         if emb is not None:
             fixed = _migrate_embedding(emb)
@@ -445,16 +445,24 @@ def get_clap_audio_embedding(audio_48k: np.ndarray) -> np.ndarray:
         audios=[audio_48k], return_tensors="pt", sampling_rate=48000
     )
     with torch.no_grad():
-        feat = clap_model.get_audio_features(**inputs)
+        # **inputs 대신 명시적 키 전달 — 버전별 API 차이 방지
+        feat = clap_model.get_audio_features(
+            input_features=inputs.get("input_features"),
+            is_longer=inputs.get("is_longer"),
+        )
     emb = feat[0].cpu().numpy().astype(np.float32)
     return emb / (np.linalg.norm(emb) + 1e-9)
 
 
 def get_clap_text_embedding(text: str) -> np.ndarray:
-    """CLAP 텍스트 인코더로 텍스트 임베딩 추출 (AudioGen 불필요)"""
+    """CLAP 텍스트 인코더로 텍스트 임베딩 추출"""
     inputs = clap_processor(text=[text], return_tensors="pt", padding=True)
     with torch.no_grad():
-        feat = clap_model.get_text_features(**inputs)
+        # **inputs 대신 명시적 키 전달 — 버전별 API 차이 방지
+        feat = clap_model.get_text_features(
+            input_ids=inputs.get("input_ids"),
+            attention_mask=inputs.get("attention_mask"),
+        )
     emb = feat[0].cpu().numpy().astype(np.float32)
     return emb / (np.linalg.norm(emb) + 1e-9)
 
@@ -475,7 +483,7 @@ def check_duplicate_prompts(
     threshold: float = 0.88,
 ) -> list[dict[str, Any]]:
     """
-    새 프롬프트가 기존 등록 프롬프트와 유사한지 CLAP 텍스트 임베딩으로 비교.
+    새 프롬프트가 기존 등록 프롬프트와 유사한지 CLAP 임베딩으로 비교.
     유사도 >= threshold이면 해당 항목 리스트 반환.
     """
     duplicates = []
@@ -483,9 +491,14 @@ def check_duplicate_prompts(
         emb = data.get("embedding")
         if not emb:
             continue
-        ref = np.array(emb, dtype=np.float32)
-        ref = ref / (np.linalg.norm(ref) + 1e-9)
-        sim = float(np.dot(new_emb, ref))
+        try:
+            ref = np.array(emb, dtype=np.float32).flatten()  # 혹시 2D면 1D로
+            if ref.shape != new_emb.shape:
+                continue  # 차원 불일치 시 스킵
+            ref = ref / (np.linalg.norm(ref) + 1e-9)
+            sim = float(np.dot(new_emb, ref))
+        except Exception:
+            continue
         if sim >= threshold:
             duplicates.append({
                 "prompt_id":   pid,
@@ -782,11 +795,12 @@ def run_clap_in_subtree(
     YAMNet이 지목한 카테고리 서브트리 내 사용자 프롬프트와만 CLAP 비교.
     covered_by_yamnet=True 프롬프트는 YAMNet이 이미 처리하므로 제외.
     """
-    # 카테고리 필터 + 중복 제외
+    # 카테고리 필터 + YAMNet 커버 제외 + 비활성화 제외
     candidates = {
         pid: d for pid, d in prompt_store.items()
         if d.get("category") == category
         and not d.get("covered_by_yamnet", False)
+        and d.get("enabled", True)
     }
     # animal: 서브카테고리로 추가 축소
     if sub_category and len(candidates) > 1:
@@ -977,8 +991,12 @@ def register_prompt(req: PromptRegisterRequest):
 
     # 2. CLAP 텍스트 임베딩 생성
     try:
+        print("  CLAP 텍스트 임베딩 생성 중...", flush=True)
         text_emb = get_clap_text_embedding(req.description)
+        print(f"  임베딩 완료 (shape={text_emb.shape})", flush=True)
     except Exception as e:
+        import traceback
+        print(f"  임베딩 오류:\n{traceback.format_exc()}", flush=True)
         raise HTTPException(status_code=500, detail=f"텍스트 임베딩 실패: {e}")
 
     # 3. 기존 프롬프트와 유사도 비교 (중복 감지)
