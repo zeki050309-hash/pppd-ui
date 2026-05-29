@@ -487,8 +487,10 @@ def _get_clap_projection_dim() -> int:
 def get_clap_audio_embedding(audio_48k: np.ndarray) -> np.ndarray:
     """
     CLAP 오디오 임베딩 추출.
-    get_audio_features() API 변경에 대비해 내부 경로(audio_model → audio_projection)를 직접 사용.
     반환: shape (projection_dim,) — 보통 (512,)
+
+    HTSAT 모델은 pooler_output이 None일 수 있으므로
+    None이면 last_hidden_state를 mean-pool해서 대체한다.
     """
     inputs = clap_processor(
         audios=[audio_48k], return_tensors="pt", sampling_rate=48000
@@ -498,11 +500,13 @@ def get_clap_audio_embedding(audio_48k: np.ndarray) -> np.ndarray:
             input_features=inputs.get("input_features"),
             is_longer=inputs.get("is_longer"),
         )
-        # pooler_output: (batch, hidden_dim)
-        pooled  = audio_out.pooler_output
-        # 프로젝션: (batch, projection_dim)
-        proj    = clap_model.audio_projection(pooled)
-        proj    = proj / proj.norm(p=2, dim=-1, keepdim=True)
+        # pooler_output이 None이면 last_hidden_state 평균으로 대체
+        if audio_out.pooler_output is not None:
+            pooled = audio_out.pooler_output          # (batch, hidden_dim)
+        else:
+            pooled = audio_out.last_hidden_state.mean(dim=1)  # (batch, hidden_dim)
+        proj = clap_model.audio_projection(pooled)    # (batch, projection_dim)
+        proj = proj / proj.norm(p=2, dim=-1, keepdim=True)
     emb = proj[0].cpu().numpy().astype(np.float32)
     return emb / (np.linalg.norm(emb) + 1e-9)
 
@@ -887,6 +891,10 @@ def run_clap_in_subtree(
             scores[pid] = float(np.dot(audio_emb, ref))
         except Exception:
             continue
+
+    if not scores:
+        print("CLAP: 유효한 후보 없음 (shape 불일치 등)", flush=True)
+        return None
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     best_id, best_score = ranked[0]
