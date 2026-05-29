@@ -297,6 +297,43 @@ def load_prompts() -> None:
     )
 
 
+def _migrate_prompt_embeddings() -> None:
+    """
+    서버 시작 시 호출.
+    저장된 임베딩이 CLAP projection 차원(512)과 맞지 않으면
+    현재 text_model → text_projection 경로로 재생성한다.
+    """
+    proj_dim = _get_clap_projection_dim()
+    to_regen: list[str] = []
+
+    for pid, data in prompt_store.items():
+        emb = data.get("embedding")
+        if not emb:
+            to_regen.append(pid)
+            continue
+        arr = np.array(emb, dtype=np.float32).flatten()
+        if arr.shape[0] != proj_dim:
+            to_regen.append(pid)
+
+    if not to_regen:
+        return
+
+    print(f"임베딩 마이그레이션 필요: {len(to_regen)}개 (shape ≠ {proj_dim})", flush=True)
+    success = 0
+    for pid in to_regen:
+        desc = prompt_store[pid].get("description", "")
+        try:
+            new_emb = get_clap_text_embedding(desc)
+            prompt_store[pid]["embedding"] = new_emb.tolist()
+            success += 1
+        except Exception as e:
+            print(f"  재생성 실패 ({pid}: '{desc}'): {e}", flush=True)
+
+    if success:
+        save_prompts()
+        print(f"임베딩 마이그레이션 완료: {success}개 재생성", flush=True)
+
+
 # ───────────────────────────────────────────────────────────────
 # 유틸 함수
 # ───────────────────────────────────────────────────────────────
@@ -439,31 +476,55 @@ def get_context_alert_prior(
 # ───────────────────────────────────────────────────────────────
 # CLAP 임베딩 (Transformers 전용, ONNX/AudioGen 불필요)
 # ───────────────────────────────────────────────────────────────
+def _get_clap_projection_dim() -> int:
+    """CLAP 모델의 실제 projection 차원을 반환 (보통 512)"""
+    try:
+        return clap_model.text_projection.out_features
+    except Exception:
+        return 512
+
+
 def get_clap_audio_embedding(audio_48k: np.ndarray) -> np.ndarray:
-    """Transformers ClapModel 오디오 인코더로 임베딩 추출"""
+    """
+    CLAP 오디오 임베딩 추출.
+    get_audio_features() API 변경에 대비해 내부 경로(audio_model → audio_projection)를 직접 사용.
+    반환: shape (projection_dim,) — 보통 (512,)
+    """
     inputs = clap_processor(
         audios=[audio_48k], return_tensors="pt", sampling_rate=48000
     )
     with torch.no_grad():
-        # **inputs 대신 명시적 키 전달 — 버전별 API 차이 방지
-        feat = clap_model.get_audio_features(
+        audio_out = clap_model.audio_model(
             input_features=inputs.get("input_features"),
             is_longer=inputs.get("is_longer"),
         )
-    emb = feat[0].cpu().numpy().astype(np.float32)
+        # pooler_output: (batch, hidden_dim)
+        pooled  = audio_out.pooler_output
+        # 프로젝션: (batch, projection_dim)
+        proj    = clap_model.audio_projection(pooled)
+        proj    = proj / proj.norm(p=2, dim=-1, keepdim=True)
+    emb = proj[0].cpu().numpy().astype(np.float32)
     return emb / (np.linalg.norm(emb) + 1e-9)
 
 
 def get_clap_text_embedding(text: str) -> np.ndarray:
-    """CLAP 텍스트 인코더로 텍스트 임베딩 추출"""
+    """
+    CLAP 텍스트 임베딩 추출.
+    get_text_features() API 변경에 대비해 내부 경로(text_model → text_projection)를 직접 사용.
+    반환: shape (projection_dim,) — 보통 (512,)
+    """
     inputs = clap_processor(text=[text], return_tensors="pt", padding=True)
     with torch.no_grad():
-        # **inputs 대신 명시적 키 전달 — 버전별 API 차이 방지
-        feat = clap_model.get_text_features(
+        text_out = clap_model.text_model(
             input_ids=inputs.get("input_ids"),
             attention_mask=inputs.get("attention_mask"),
         )
-    emb = feat[0].cpu().numpy().astype(np.float32)
+        # pooler_output: CLS 토큰 (batch, hidden_dim)
+        pooled  = text_out.pooler_output
+        # 프로젝션: (batch, projection_dim)
+        proj    = clap_model.text_projection(pooled)
+        proj    = proj / proj.norm(p=2, dim=-1, keepdim=True)
+    emb = proj[0].cpu().numpy().astype(np.float32)
     return emb / (np.linalg.norm(emb) + 1e-9)
 
 
@@ -492,9 +553,10 @@ def check_duplicate_prompts(
         if not emb:
             continue
         try:
-            ref = np.array(emb, dtype=np.float32).flatten()  # 혹시 2D면 1D로
-            if ref.shape != new_emb.shape:
-                continue  # 차원 불일치 시 스킵
+            ref = np.array(emb, dtype=np.float32).flatten()
+            # 둘 다 같은 1D shape여야 유효한 비교
+            if ref.ndim != 1 or new_emb.ndim != 1 or ref.shape != new_emb.shape:
+                continue
             ref = ref / (np.linalg.norm(ref) + 1e-9)
             sim = float(np.dot(new_emb, ref))
         except Exception:
@@ -817,9 +879,14 @@ def run_clap_in_subtree(
 
     scores: dict[str, float] = {}
     for pid, d in candidates.items():
-        ref = np.array(d["embedding"], dtype=np.float32)
-        ref = ref / (np.linalg.norm(ref) + 1e-9)
-        scores[pid] = float(np.dot(audio_emb, ref))
+        try:
+            ref = np.array(d["embedding"], dtype=np.float32).flatten()
+            if ref.ndim != 1 or ref.shape != audio_emb.shape:
+                continue  # 잘못된 shape 스킵
+            ref = ref / (np.linalg.norm(ref) + 1e-9)
+            scores[pid] = float(np.dot(audio_emb, ref))
+        except Exception:
+            continue
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     best_id, best_score = ranked[0]
@@ -1188,6 +1255,7 @@ def startup() -> None:
         print("경고: ANTHROPIC_API_KEY 없음 → 키워드/규칙 기반 폴백 사용", flush=True)
 
     load_prompts()
+    _migrate_prompt_embeddings()  # 잘못된 shape 임베딩 자동 재생성
     print("서버 준비 완료", flush=True)
 
 
