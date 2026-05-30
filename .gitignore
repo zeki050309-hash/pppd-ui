@@ -44,6 +44,12 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# 미사용 플랫폼 (Android 앱만 타겟)
+linux/
+macos/
+windows/
+web/
+
 # Python server
 server/venv/
 server/__pycache__/

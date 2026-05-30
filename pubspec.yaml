@@ -92,6 +92,8 @@ dependencies:
   # vibration: 모바일 전용 — lib 코드에서 kIsWeb 가드로 감쌈
   vibration: ^1.9.0
   http: 1.4.0
+  # flutter_local_notifications: 로컬 알림 → Apple Watch / Wear OS 자동 미러링
+  flutter_local_notifications: ^18.0.1
 
   cupertino_icons: ^1.0.0
 

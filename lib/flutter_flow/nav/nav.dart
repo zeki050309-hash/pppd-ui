@@ -94,10 +94,14 @@ GoRouter createRouter(AppStateNotifier appStateNotifier) => GoRouter(
                     page: MapWidget(),
                   )),
         FFRoute(
-          name: AboutLocationWidget.routeName,
-          path: AboutLocationWidget.routePath,
-          builder: (context, params) => AboutLocationWidget(),
-        ),
+            name: SpeechWidget.routeName,
+            path: SpeechWidget.routePath,
+            builder: (context, params) => params.isEmpty
+                ? NavBarPage(initialPage: 'Speech')
+                : NavBarPage(
+                    initialPage: 'Speech',
+                    page: SpeechWidget(),
+                  )),
         FFRoute(
           name: AboutSoundWidget.routeName,
           path: AboutSoundWidget.routePath,
@@ -122,11 +126,6 @@ GoRouter createRouter(AppStateNotifier appStateNotifier) => GoRouter(
           name: Tutorial4Widget.routeName,
           path: Tutorial4Widget.routePath,
           builder: (context, params) => Tutorial4Widget(),
-        ),
-        FFRoute(
-          name: LocationnSoundRegisterWidget.routeName,
-          path: LocationnSoundRegisterWidget.routePath,
-          builder: (context, params) => LocationnSoundRegisterWidget(),
         )
       ].map((r) => r.toRoute(appStateNotifier)).toList(),
     );

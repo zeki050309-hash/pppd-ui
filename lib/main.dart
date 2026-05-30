@@ -10,6 +10,7 @@ import 'flutter_flow/flutter_flow_util.dart';
 import 'index.dart';
 import 'services/promptear_service.dart';
 import 'services/location_context_service.dart';
+import 'services/notification_service.dart';
 export 'services/promptear_service.dart' show AlertPriority;
 
 void main() async {
@@ -19,6 +20,7 @@ void main() async {
 
   await initFirebase();
   await FlutterFlowTheme.initialize();
+  await NotificationService.instance.initialize();
 
   final promptEarService   = PromptEarService();
   final locationCtxService = LocationContextService();
@@ -114,7 +116,7 @@ class _MyAppState extends State<MyApp> {
   Widget build(BuildContext context) {
     return MaterialApp.router(
       debugShowCheckedModeBanner: false,
-      title: 'PPPD UI',
+      title: 'PromptEar',
       scrollBehavior: MyAppScrollBehavior(),
       localizationsDelegates: [
         GlobalMaterialLocalizations.delegate,
@@ -168,6 +170,7 @@ class _NavBarPageState extends State<NavBarPage> {
   Widget build(BuildContext context) {
     final tabs = {
       'HomePage': HomePageWidget(),
+      'Speech': SpeechWidget(),
       'customizing': CustomizingWidget(),
       'map': MapWidget(),
     };
@@ -195,6 +198,14 @@ class _NavBarPageState extends State<NavBarPage> {
               size: 24.0,
             ),
             label: 'Home',
+            tooltip: '',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(
+              Icons.record_voice_over_outlined,
+              size: 24.0,
+            ),
+            label: 'Speech',
             tooltip: '',
           ),
           BottomNavigationBarItem(

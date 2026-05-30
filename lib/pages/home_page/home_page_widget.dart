@@ -88,7 +88,7 @@ class _HomePageWidgetState extends State<HomePageWidget> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('PPPD', style: pppdText(size: 28, weight: FontWeight.w900)),
+                            Text('PromptEar', style: pppdText(size: 28, weight: FontWeight.w900)),
                             Text('소리와 위치를 더 직관적으로', style: pppdText(size: 13, color: PppdColors.muted)),
                           ],
                         ),
@@ -304,7 +304,7 @@ class _HomePageWidgetState extends State<HomePageWidget> {
                   const SizedBox(height: 14),
                   PppdActionCard(
                     title: '사용 방법',
-                    subtitle: 'PPPD의 기본 사용 흐름을 빠르게 익혀요.',
+                    subtitle: 'PromptEar의 기본 사용 흐름을 빠르게 익혀요.',
                     icon: Icons.school_rounded,
                     onTap: () => context.pushNamed(Tutorial1Widget.routeName),
                   ),

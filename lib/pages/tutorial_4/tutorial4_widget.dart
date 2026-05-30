@@ -27,7 +27,7 @@ class _Tutorial4WidgetState extends State<Tutorial4Widget> {
       onTap: () { FocusScope.of(context).unfocus(); FocusManager.instance.primaryFocus?.unfocus(); },
       child: PppdScaffold(
         title: '사용 방법 4/4',
-        subtitle: 'PPPD를 빠르게 시작해요.',
+        subtitle: 'PromptEar를 빠르게 시작해요.',
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
           child: Column(

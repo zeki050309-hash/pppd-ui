@@ -33,6 +33,12 @@ class _RegisteredPromptsPanelState extends State<RegisteredPromptsPanel> {
     setState(() => _loading = true);
     try {
       final list = await svc.fetchPrompts();
+      // 최신 등록 순으로 정렬 (created_at_unix 내림차순)
+      list.sort((a, b) {
+        final ta = (a['created_at_unix'] as num?)?.toDouble() ?? 0.0;
+        final tb = (b['created_at_unix'] as num?)?.toDouble() ?? 0.0;
+        return tb.compareTo(ta);
+      });
       if (mounted) setState(() { _prompts = list; _loading = false; });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
@@ -110,14 +116,17 @@ class _PromptTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final enabled       = data['enabled'] as bool? ?? true;
-    final coveredByYamnet = data['covered_by_yamnet'] as bool? ?? false;
-    final yamnetClass   = data['yamnet_class']  as String?;
-    final riskLevel     = data['risk_level']    as String? ?? '';
+    final enabled         = data['enabled']          as bool?   ?? true;
+    final coveredByYamnet = data['covered_by_yamnet'] as bool?   ?? false;
+    final yamnetClass     = data['yamnet_class']      as String?;
+    final riskLevel       = data['risk_level']        as String? ?? '';
+    final alertPrior      = (data['alert_prior']  as num?)?.toDouble();
+    final priorReason     = data['prior_reason']      as String? ?? '';
+    final category        = data['category']          as String? ?? '';
 
     return Container(
       margin: const EdgeInsets.only(top: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
         color: enabled ? Colors.white : const Color(0xFFF5F5F5),
         borderRadius: BorderRadius.circular(16),
@@ -126,6 +135,7 @@ class _PromptTile extends StatelessWidget {
         ),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(
             child: Column(
@@ -138,14 +148,33 @@ class _PromptTile extends StatelessWidget {
                     color: enabled ? PppdColors.text : PppdColors.muted,
                   ),
                 ),
-                const SizedBox(height: 4),
-                Wrap(spacing: 6, children: [
+                const SizedBox(height: 6),
+                Wrap(spacing: 6, runSpacing: 4, children: [
                   if (coveredByYamnet && yamnetClass != null)
                     _chip('YAMNet: $yamnetClass', PppdColors.purple)
                   else
                     _chip('CLAP 추론', const Color(0xFF4B9EFF)),
+                  if (category.isNotEmpty) _chip(category, PppdColors.deepPurple.withOpacity(0.5)),
                   if (riskLevel.isNotEmpty) _chip(riskLevel, _riskColor(riskLevel)),
+                  if (alertPrior != null)
+                    _chip(
+                      'P(알림) ${(alertPrior * 100).toStringAsFixed(0)}%',
+                      alertPrior >= 0.8
+                          ? PppdColors.danger
+                          : alertPrior >= 0.6
+                              ? PppdColors.warning
+                              : PppdColors.muted,
+                    ),
                 ]),
+                if (priorReason.isNotEmpty) ...[
+                  const SizedBox(height: 5),
+                  Text(
+                    priorReason,
+                    style: pppdText(size: 11, color: PppdColors.muted, height: 1.3),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
               ],
             ),
           ),
@@ -195,6 +224,7 @@ class AboutSoundWidget extends StatefulWidget {
 class _AboutSoundWidgetState extends State<AboutSoundWidget> {
   late AboutSoundModel _model;
   final scaffoldKey = GlobalKey<ScaffoldState>();
+  bool _submitting = false;   // 중복 등록(재진입) 방지
 
   final Map<String, List<String>> detailOptionsByMainCategory = {
     '사람': ['생후 0~6개월 영아','생후 6~12개월 영아','생후 12~18개월 영아','언어를 구사하는 사람'],
@@ -282,7 +312,20 @@ class _AboutSoundWidgetState extends State<AboutSoundWidget> {
     );
   }
 
+  void _resetForm() {
+    _model.mainCategoryValue = null;
+    _model.mainCategoryValueController = null;
+    _model.detailCategoryValue = null;
+    _model.detailCategoryValueController = null;
+    _model.soundDetailValue = null;
+    _model.soundDetailValueController = null;
+    _model.textController?.clear();
+  }
+
   Future<void> _handleRegister() async {
+    // 이미 등록 처리 중이면 무시 (중복 등록/충돌 방지)
+    if (_submitting) return;
+
     if (!canRegister) {
       await showDialog(
         context: context,
@@ -308,10 +351,17 @@ class _AboutSoundWidgetState extends State<AboutSoundWidget> {
       return;
     }
 
+    final summary = selectedSoundSummary;   // 리셋 전에 캡처
+    final rootNav = Navigator.of(context, rootNavigator: true);
+    _submitting = true;
+    bool loadingShown = false;
+
     // 로딩 다이얼로그
+    loadingShown = true;
     showDialog(
       context: context,
       barrierDismissible: false,
+      useRootNavigator: true,
       builder: (c) => const AlertDialog(
         content: Row(
           children: [
@@ -323,10 +373,18 @@ class _AboutSoundWidgetState extends State<AboutSoundWidget> {
       ),
     );
 
+    void closeLoading() {
+      if (loadingShown) {
+        loadingShown = false;
+        rootNav.pop();
+      }
+    }
+
     try {
       final promptId = 'sound_${DateTime.now().millisecondsSinceEpoch}';
-      final result = await svc.registerPrompt(promptId, selectedSoundSummary);
-      if (context.mounted) Navigator.pop(context); // 로딩 닫기
+      final result = await svc.registerPrompt(promptId, summary);
+      if (!mounted) return;
+      closeLoading();
 
       final classification = result['classification'] as Map<String, dynamic>? ?? {};
       final category    = classification['category']    ?? '미분류';
@@ -334,6 +392,7 @@ class _AboutSoundWidgetState extends State<AboutSoundWidget> {
       final covered     = classification['covered_by_yamnet'] == true;
       final yamnetClass = classification['yamnet_class'] as String?;
       final duplicates  = result['duplicate_warning'] as List?;
+      final classifiedBy = result['classified_by'] as String? ?? '';
 
       final coveredNote = covered && yamnetClass != null
           ? '\n\n✅ YAMNet 클래스 "$yamnetClass"에 해당해요.\n해당 소리가 감지되면 자동으로 진동합니다.'
@@ -343,25 +402,37 @@ class _AboutSoundWidgetState extends State<AboutSoundWidget> {
           ? '\n\n⚠️ 유사하게 등록된 소리 있음:\n"${(duplicates.first as Map)['description']}"'
           : '';
 
-      if (context.mounted) {
+      // 분류 경로 표시: LLM 모델명이면 LLM, 'fallback' 포함이면 규칙 기반
+      final byNote = classifiedBy.isEmpty
+          ? ''
+          : (classifiedBy.contains('fallback')
+              ? '\n\n🔧 분류: 규칙 기반(fallback) — LLM 미사용'
+              : '\n\n🤖 분류: $classifiedBy');
+
+      // 등록 성공 → 폼 초기화하여 다음 등록이 깨끗한 상태에서 시작되도록
+      safeSetState(_resetForm);
+
+      if (mounted) {
         await showDialog(
           context: context,
           builder: (c) => AlertDialog(
             title: const Text('등록 완료'),
             content: Text(
-              '소리: $selectedSoundSummary\n카테고리: $category  |  위험도: $risk$coveredNote$dupNote',
+              '소리: $summary\n카테고리: $category  |  위험도: $risk$coveredNote$dupNote$byNote',
             ),
             actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('확인'))],
           ),
         );
       }
     } catch (e) {
-      if (context.mounted) Navigator.pop(context); // 로딩 닫기
-      if (context.mounted) {
+      closeLoading();
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('등록 실패: $e')),
         );
       }
+    } finally {
+      _submitting = false;
     }
   }
 

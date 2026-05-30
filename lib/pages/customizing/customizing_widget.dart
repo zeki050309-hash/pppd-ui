@@ -191,7 +191,7 @@ class _CustomizingWidgetState extends State<CustomizingWidget> {
               ),
               const SizedBox(height: 18),
 
-              // ── 소리/장소 등록 ─────────────────────────────────────
+              // ── 소리 등록 ──────────────────────────────────────────
               PppdSectionCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -199,7 +199,7 @@ class _CustomizingWidgetState extends State<CustomizingWidget> {
                     Text('무엇을 등록할까요?', style: pppdText(size: 18, weight: FontWeight.w900)),
                     const SizedBox(height: 8),
                     Text(
-                      '소리만 따로 등록하거나, 장소를 먼저 고른 뒤 그 장소에서 자주 들리는 소리를 연결할 수 있어요.',
+                      '사람, 동물, 근무 환경에서 꼭 알아야 할 소리를 등록해 두면 그 소리가 감지될 때 진동으로 알려드려요.',
                       style: pppdText(size: 14, color: PppdColors.muted, height: 1.45),
                     ),
                   ],
@@ -212,14 +212,6 @@ class _CustomizingWidgetState extends State<CustomizingWidget> {
                 icon: Icons.graphic_eq_rounded,
                 badge: 'Sound',
                 onTap: () => context.pushNamed(AboutSoundWidget.routeName),
-              ),
-              const SizedBox(height: 14),
-              PppdActionCard(
-                title: '장소 등록',
-                subtitle: '자주 방문하는 장소를 등록하고 관련 소리를 이어서 설정해요.',
-                icon: Icons.place_rounded,
-                badge: 'Place',
-                onTap: () => context.pushNamed(AboutLocationWidget.routeName),
               ),
             ],
           ),

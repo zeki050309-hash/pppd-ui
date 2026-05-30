@@ -142,6 +142,22 @@ class _AlertTile extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                         decoration: BoxDecoration(color: PppdColors.danger, borderRadius: BorderRadius.circular(7)),
                         child: Text('긴급', style: pppdText(size: 10, color: Colors.white, weight: FontWeight.w700)),
+                      )
+                    else if (alert.priority == AlertPriority.normal)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                        decoration: BoxDecoration(color: PppdColors.safe, borderRadius: BorderRadius.circular(7)),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.vibration_rounded, size: 10, color: Colors.white),
+                          const SizedBox(width: 3),
+                          Text('진동', style: pppdText(size: 10, color: Colors.white, weight: FontWeight.w700)),
+                        ]),
+                      )
+                    else
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                        decoration: BoxDecoration(color: PppdColors.muted.withOpacity(0.15), borderRadius: BorderRadius.circular(7)),
+                        child: Text('기록만', style: pppdText(size: 10, color: PppdColors.muted, weight: FontWeight.w600)),
                       ),
                   ],
                 ),
@@ -160,17 +176,20 @@ class _AlertTile extends StatelessWidget {
                     Icon(
                       Icons.notifications_active_rounded,
                       size: 13,
-                      color: alert.pAlert >= 0.37 ? PppdColors.safe : PppdColors.muted,
+                      color: alert.pAlert >= 0.50 ? PppdColors.safe : PppdColors.muted,
                     ),
                     const SizedBox(width: 4),
                     Text(
                       'P(Alert) ${(alert.pAlert * 100).toStringAsFixed(0)}%',
-                      style: pppdText(size: 12, color: alert.pAlert >= 0.37 ? PppdColors.safe : PppdColors.muted),
+                      style: pppdText(size: 12, color: alert.pAlert >= 0.50 ? PppdColors.safe : PppdColors.muted),
                     ),
                     const Spacer(),
                     Text(timeStr, style: pppdText(size: 12, color: PppdColors.muted)),
                   ],
                 ),
+                // ── Model A+ 입력 변수 ──────────────────────────────
+                const SizedBox(height: 6),
+                _ModelVarsRow(alert: alert),
               ],
             ),
           ),
@@ -200,4 +219,58 @@ class _AlertTile extends StatelessWidget {
       case AlertPriority.weak:   return const Color(0xFFEAE4FF);
     }
   }
+}
+
+// ── Model A+ 입력 변수 표시 행 ────────────────────────────────────
+class _ModelVarsRow extends StatelessWidget {
+  const _ModelVarsRow({required this.alert});
+  final SoundAlert alert;
+
+  @override
+  Widget build(BuildContext context) {
+    // 모두 0이면 서버가 값을 안 줬거나 기록 안 된 경우 → 표시 생략
+    if (alert.C == 0.0 && alert.U == 0.0 && alert.X == 0.0) {
+      return const SizedBox.shrink();
+    }
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F4FF),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 4,
+        children: [
+          _var('C', alert.C, '탐지 신뢰도'),
+          _var('U', alert.U, '소리 prior'),
+          _var('X', alert.X, '상황 prior'),
+          _var('L', alert.L, '음량'),
+          _var('S', alert.S, 'SNR'),
+          _varRaw('z', alert.z.toStringAsFixed(2), '로짓'),
+        ],
+      ),
+    );
+  }
+
+  Widget _var(String name, double val, String tooltip) =>
+      _varRaw(name, '${(val * 100).toStringAsFixed(0)}%', tooltip);
+
+  Widget _varRaw(String name, String valStr, String tooltip) => Tooltip(
+    message: tooltip,
+    child: RichText(
+      text: TextSpan(
+        style: pppdText(size: 11, color: PppdColors.muted),
+        children: [
+          TextSpan(
+            text: '$name=',
+            style: pppdText(size: 11, color: PppdColors.deepPurple.withOpacity(0.6),
+                weight: FontWeight.w700),
+          ),
+          TextSpan(text: valStr),
+        ],
+      ),
+    ),
+  );
 }

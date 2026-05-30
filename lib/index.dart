@@ -3,6 +3,7 @@ export '/pages/home_page/home_page_widget.dart' show HomePageWidget;
 export '/pages/alert/alert_widget.dart' show AlertWidget;
 export '/pages/customizing/customizing_widget.dart' show CustomizingWidget;
 export '/pages/map/map_widget.dart' show MapWidget;
+export '/pages/speech/speech_widget.dart' show SpeechWidget;
 export '/pages/about_location/about_location_widget.dart'
     show AboutLocationWidget;
 export '/pages/about_sound/about_sound_widget.dart' show AboutSoundWidget;
