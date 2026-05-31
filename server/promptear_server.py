@@ -329,8 +329,13 @@ openai_client    = None   # STT(음성→텍스트)용. OPENAI_API_KEY 있을 �
 # 날 수 있다. 단일 사용자 로컬 서버이므로 추론을 직렬화해 안전하게 만든다.
 _infer_lock = threading.Lock()
 
-# STT 모델 (stt.py 와 동일 기본값)
-STT_MODEL = "gpt-4o-mini-transcribe"
+# Silero VAD (Auto-STT 전용)
+silero_vad_model = None
+_vad_lock        = threading.Lock()   # VAD 는 _infer_lock 과 분리 (별도 torch 모델)
+
+# STT 모델
+STT_MODEL      = "gpt-4o-mini-transcribe"       # 수동 STT (/stt 엔드포인트)
+AUTO_STT_MODEL = "gpt-4o-transcribe"            # 자동 STT (Auto-STT 엔진, 정확도 우선)
 
 # ───────────────────────────────────────────────────────────────
 # 프롬프트 저장소
@@ -1295,10 +1300,16 @@ def health():
     return {
         "status": "ok",
         "models": {
-            "yamnet":    "loaded" if yamnet_model  else "not_loaded",
-            "clap":      "loaded" if clap_model    else "not_loaded",
+            "yamnet":    "loaded" if yamnet_model     else "not_loaded",
+            "clap":      "loaded" if clap_model       else "not_loaded",
             "llm":       LLM_MODEL if anthropic_client else "fallback",
-            "stt":       STT_MODEL if openai_client else "disabled",
+            "stt":       STT_MODEL if openai_client   else "disabled",
+            "vad":       "silero"  if silero_vad_model else "yamnet_only",
+        },
+        "auto_stt": {
+            "enabled":       auto_stt_engine.enabled,
+            "stt_available": openai_client is not None,
+            "vad_available": silero_vad_model is not None,
         },
         "paths":          {"base_dir": BASE_DIR},
         "prompts_count":  len(prompt_store),
@@ -1517,6 +1528,13 @@ def analyze_audio(req: AudioAnalyzeRequest):
     alert_model["should_alert"] = should_alert
     alert_model["alert_reason"] = alert_reason
 
+    # ── Auto-STT: speech 카테고리 감지 시 자동 전사 ─────────────────
+    stt_result: dict[str, Any] | None = None
+    if auto_stt_engine.enabled:
+        stt_text = auto_stt_engine.process_chunk(audio_16k, category, top_conf)
+        if stt_text:
+            stt_result = {"text": stt_text, "triggered": True}
+
     return {
         "yamnet":       yamnet_result,
         "clap":         clap_result,
@@ -1526,6 +1544,244 @@ def analyze_audio(req: AudioAnalyzeRequest):
         "prior_info":   {"U": u_info, "X": x_info},
         "should_alert": should_alert,
         "alert_reason": alert_reason,
+        "stt_result":   stt_result,
+    }
+
+
+# ───────────────────────────────────────────────────────────────
+# Auto-STT 엔진
+# realtime_stt_openai.py 의 Silero VAD + OpenAI STT 파이프라인을
+# 서버 청크 단위(1초 PCM)로 재설계해 통합.
+#
+# 핵심 변경:
+#   - sounddevice 마이크 루프 제거 → /analyze 가 보내는 PCM 청크를 수신
+#   - client.responses.create() → chat.completions.create() (API 호환)
+#   - 모듈 로드 시 즉시 실행 제거 → startup() 에서 선택적으로 로드
+#   - _infer_lock 과 분리된 _vad_lock 사용 (CLAP/YAMNet 과 충돌 방지)
+# ───────────────────────────────────────────────────────────────
+
+def _vad_avg_prob(audio_16k: np.ndarray) -> float:
+    """Silero VAD 로 1초 청크(16kHz)의 평균 발화 확률 계산."""
+    if silero_vad_model is None:
+        return 0.0
+    frame_size = 512   # Silero VAD 요구 프레임 크기 (16kHz)
+    audio_f = np.nan_to_num(audio_16k.astype(np.float32),
+                             nan=0.0, posinf=0.0, neginf=0.0)
+    audio_f = np.clip(audio_f, -1.0, 1.0)
+    probs: list[float] = []
+    for i in range(0, len(audio_f) - frame_size + 1, frame_size):
+        frame  = audio_f[i : i + frame_size]
+        tensor = torch.from_numpy(frame).float()
+        with _vad_lock:
+            with torch.no_grad():
+                probs.append(float(silero_vad_model(tensor, 16000).item()))
+    return float(np.mean(probs)) if probs else 0.0
+
+
+def _auto_stt_denoise(audio: np.ndarray, sr: int = 16000) -> np.ndarray:
+    """High-pass 필터 + noisereduce(설치된 경우)."""
+    if len(audio) >= sr * 0.1:
+        try:
+            sos = signal.butter(4, 80.0, btype="highpass", fs=sr, output="sos")
+            audio = signal.sosfilt(sos, audio).astype(np.float32)
+        except Exception:
+            pass
+    try:
+        import noisereduce as nr
+        abs_a = np.abs(audio)
+        quiet = audio[abs_a <= np.percentile(abs_a, 25)]
+        noise_level = float(np.sqrt(np.mean(quiet ** 2) + 1e-12)) if len(quiet) else 0.0
+        if noise_level >= 0.003:
+            audio = nr.reduce_noise(y=audio, sr=sr,
+                                    stationary=False, prop_decrease=0.65).astype(np.float32)
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"[AutoSTT Denoise] 실패: {e}", flush=True)
+    peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+    if peak > 1e-6:
+        audio = audio / peak * 0.9
+    return np.clip(audio, -1.0, 1.0).astype(np.float32)
+
+
+def _auto_stt_correct(text: str) -> str:
+    """GPT-4o-mini 로 STT 결과의 띄어쓰기·조사·오타만 보정."""
+    if not openai_client or not text.strip():
+        return text
+    try:
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role": "user",
+                "content": (
+                    "다음 한국어 STT 결과의 띄어쓰기·조사·명백한 오타만 보정하라.\n"
+                    "새 내용 추가 금지. 의미 변경 금지. 결과 문장만 출력.\n\n"
+                    f"STT: {text}"
+                ),
+            }],
+            max_tokens=256,
+            temperature=0,
+        )
+        corrected = resp.choices[0].message.content.strip()
+        return corrected if corrected else text
+    except Exception as e:
+        print(f"[AutoSTT Correct] 실패: {e}", flush=True)
+        return text
+
+
+def _auto_stt_transcribe(audio_16k: np.ndarray, use_denoise: bool = False) -> str | None:
+    """오디오 → OpenAI STT → (선택) LLM 보정 → 최종 텍스트."""
+    if not openai_client:
+        return None
+    if use_denoise:
+        audio_16k = _auto_stt_denoise(audio_16k)
+    pcm16 = (np.clip(audio_16k, -1.0, 1.0) * 32767).astype(np.int16)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tf_f:
+            tmp_path = tf_f.name
+        with wave.open(tmp_path, "wb") as wf:
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000)
+            wf.writeframes(pcm16.tobytes())
+        with open(tmp_path, "rb") as f:
+            result = openai_client.audio.transcriptions.create(
+                model=AUTO_STT_MODEL,
+                file=f,
+                language="ko",
+                prompt=(
+                    "한국어 일상 대화를 정확히 받아쓰기. "
+                    "들은 내용만 전사하고, 들리지 않는 말은 추측하지 않는다."
+                ),
+                response_format="json",
+            )
+        text = (getattr(result, "text", "") or "").strip()
+        if not text:
+            return None
+        return _auto_stt_correct(text)
+    except Exception as e:
+        print(f"[AutoSTT] 전사 실패: {e}", flush=True)
+        return None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try: os.remove(tmp_path)
+            except OSError: pass
+
+
+class AutoSTTEngine:
+    """
+    YAMNet speech 감지 + Silero VAD 로 자동 STT 트리거.
+    /analyze 가 보내는 1초 PCM 청크를 state machine 으로 누적하다가
+    침묵이 감지되면 OpenAI STT 로 전사한다.
+
+    상태: idle → recording → (transcribe) → idle
+    """
+    # ── 임계치 ──────────────────────────────────────────────────
+    SPEECH_YAMNET_CONF = 0.35   # YAMNet speech category 신뢰도 트리거
+    SPEECH_VAD_THRESH  = 0.45   # Silero VAD avg prob 트리거
+    SILENCE_CHUNKS     = 2      # 연속 N청크(×1s) 침묵 = 발화 종료
+    MIN_DURATION_S     = 0.8    # 최소 발화 길이 (이 미만 버림)
+    MAX_DURATION_S     = 8.0    # 최대 발화 길이 (초과 시 강제 종료)
+    USE_DENOISE        = False  # 서버 성능 고려 기본 off
+
+    def __init__(self) -> None:
+        self.enabled         = False
+        self._lock           = threading.Lock()
+        self._state          = "idle"   # "idle" | "recording"
+        self._buffer: list[np.ndarray] = []
+        self._silent_chunks  = 0
+
+    def toggle(self, enabled: bool) -> None:
+        with self._lock:
+            self.enabled = enabled
+            if not enabled:
+                self._state = "idle"
+                self._buffer.clear()
+                self._silent_chunks = 0
+
+    def process_chunk(
+        self,
+        audio_16k: np.ndarray,
+        yamnet_category: str,
+        yamnet_conf: float,
+    ) -> str | None:
+        """
+        청크 하나를 처리한다. 발화가 완성됐으면 전사 텍스트를 반환,
+        그 외 None. STT 는 lock 밖에서 실행되므로 다른 /analyze 를 블록하지 않는다.
+        """
+        if not self.enabled or openai_client is None:
+            return None
+
+        # Silero VAD 로 이 청크의 평균 발화 확률 계산
+        vad_prob  = _vad_avg_prob(audio_16k)
+        is_speech = (
+            vad_prob >= self.SPEECH_VAD_THRESH
+            or (yamnet_category == "speech" and yamnet_conf >= self.SPEECH_YAMNET_CONF)
+        )
+
+        audio_to_transcribe: np.ndarray | None = None
+
+        with self._lock:
+            if self._state == "idle":
+                if is_speech:
+                    self._state          = "recording"
+                    self._buffer         = [audio_16k.copy()]
+                    self._silent_chunks  = 0
+                    print(f"[AutoSTT] 발화 시작 (vad={vad_prob:.2f})", flush=True)
+            else:  # recording
+                self._buffer.append(audio_16k.copy())
+                total_s = sum(len(b) for b in self._buffer) / 16000.0
+
+                if is_speech:
+                    self._silent_chunks = 0
+                else:
+                    self._silent_chunks += 1
+
+                should_end = (
+                    (self._silent_chunks >= self.SILENCE_CHUNKS
+                     and total_s >= self.MIN_DURATION_S)
+                    or total_s >= self.MAX_DURATION_S
+                )
+
+                if should_end:
+                    audio_to_transcribe = np.concatenate(self._buffer)
+                    self._state         = "idle"
+                    self._buffer.clear()
+                    self._silent_chunks = 0
+                    print(f"[AutoSTT] 발화 종료 → 전사 시작 ({total_s:.1f}s)", flush=True)
+
+        # STT 는 lock 밖에서 실행 (느린 네트워크 호출)
+        if audio_to_transcribe is not None:
+            return _auto_stt_transcribe(audio_to_transcribe, self.USE_DENOISE)
+        return None
+
+
+# 전역 AutoSTT 인스턴스 (startup 에서 초기화)
+auto_stt_engine = AutoSTTEngine()
+
+
+class AutoSTTToggleRequest(BaseModel):
+    enabled: bool
+
+
+@app.patch("/auto-stt")
+def toggle_auto_stt(req: AutoSTTToggleRequest):
+    """Auto-STT 활성화/비활성화."""
+    auto_stt_engine.toggle(req.enabled)
+    print(f"[AutoSTT] {'활성화' if req.enabled else '비활성화'}", flush=True)
+    return {
+        "enabled":       auto_stt_engine.enabled,
+        "stt_available": openai_client is not None,
+        "vad_available": silero_vad_model is not None,
+    }
+
+
+@app.get("/auto-stt")
+def get_auto_stt_status():
+    """Auto-STT 현재 상태 조회."""
+    return {
+        "enabled":       auto_stt_engine.enabled,
+        "stt_available": openai_client is not None,
+        "vad_available": silero_vad_model is not None,
     }
 
 
@@ -1607,6 +1863,23 @@ def startup() -> None:
     YAMNET_LABEL_TO_IDX = {label: i for i, label in enumerate(yamnet_labels)}
     print(f"YAMNet 완료 ({len(yamnet_labels)}개 클래스)", flush=True)
 
+    # ── Silero VAD (Auto-STT 전용, 실패해도 서버 계속 기동) ──────────
+    global silero_vad_model
+    print("Silero VAD 로딩 중 (Auto-STT)...", flush=True)
+    try:
+        _vad, _ = torch.hub.load(
+            repo_or_dir="snakers4/silero-vad",
+            model="silero_vad",
+            force_reload=False,
+            trust_repo=True,
+        )
+        _vad.eval()
+        silero_vad_model = _vad
+        print("Silero VAD 완료", flush=True)
+    except Exception as e:
+        silero_vad_model = None
+        print(f"경고: Silero VAD 로딩 실패 ({e}) → Auto-STT 는 YAMNet 기반으로만 트리거", flush=True)
+
     # ── CLAP (Transformers 전용, ONNX 불필요) ─────────────────────
     print(f"CLAP 로딩 중 (HF_HOME={os.environ['HF_HOME']})...", flush=True)
     clap_processor = ClapProcessor.from_pretrained("laion/clap-htsat-unfused")
@@ -1666,11 +1939,12 @@ def startup() -> None:
     # ── 최종 상태 배너 (LLM 사용 여부를 한눈에) ────────────────────
     print("=" * 60, flush=True)
     if anthropic_client:
-        print(f"[분류] LLM 활성화  → {LLM_MODEL}", flush=True)
+        print(f"[분류 ] LLM 활성화  → {LLM_MODEL}", flush=True)
     else:
-        print("[분류] LLM 비활성화 → 규칙 기반(fallback) 사용 중 (개/강아지 등 부정확)", flush=True)
-    print(f"[STT ] {'활성화 → ' + STT_MODEL if openai_client else '비활성화'}", flush=True)
-    print("상태 확인: 브라우저로 http://localhost:8000/ 접속 → models.llm 값 확인", flush=True)
+        print("[분류 ] LLM 비활성화 → 규칙 기반(fallback) 사용 중 (개/강아지 등 부정확)", flush=True)
+    print(f"[STT  ] {'활성화 → ' + STT_MODEL if openai_client else '비활성화'}", flush=True)
+    print(f"[AutoSTT] VAD={'Silero' if silero_vad_model else 'YAMNet만'} | STT={'준비' if openai_client else '비활성화(OPENAI_API_KEY 없음)'}", flush=True)
+    print("상태 확인: 브라우저로 http://localhost:8000/ 접속 → models 값 확인", flush=True)
     print("=" * 60, flush=True)
     print("서버 준비 완료", flush=True)
 

@@ -58,10 +58,12 @@ class PromptEarService extends ChangeNotifier with WidgetsBindingObserver {
   static const int _cooldownMs  = 10000;
 
   // ── 공개 상태 ────────────────────────────────────────────────────
-  bool   isListening      = false;   // 홈 탭: 소리 감지 녹음
-  bool   isSpeechRecording = false;  // Speech 탭: STT 녹음
-  double currentDb        = 0.0;
-  bool   serverConnected  = false;
+  bool   isListening       = false;   // 홈 탭: 소리 감지 녹음
+  bool   isSpeechRecording = false;  // Speech 탭: 수동 STT 녹음
+  bool   autoSttEnabled    = false;  // 자동 STT 활성화 여부 (홈 탭 토글)
+  String? lastAutoSttText;           // 최근 Auto-STT 인식 결과
+  double currentDb         = 0.0;
+  bool   serverConnected   = false;
   String? currentContext;
 
   double _dbThreshold = 40.0;
@@ -143,6 +145,10 @@ class PromptEarService extends ChangeNotifier with WidgetsBindingObserver {
           .get(Uri.parse(serverUrl))
           .timeout(const Duration(seconds: 3));
       serverConnected = res.statusCode == 200;
+      // 서버 재연결 시 Auto-STT 상태 재동기화
+      if (serverConnected && autoSttEnabled) {
+        _syncAutoStt(autoSttEnabled);
+      }
     } catch (_) {
       serverConnected = false;
     }
@@ -150,6 +156,22 @@ class PromptEarService extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> checkServer() => _checkServer();
+
+  /// Auto-STT 활성화/비활성화 토글. 서버에 상태를 동기화한다.
+  Future<void> setAutoStt(bool enabled) async {
+    autoSttEnabled   = enabled;
+    lastAutoSttText  = null;
+    notifyListeners();
+    if (serverConnected) _syncAutoStt(enabled);
+  }
+
+  void _syncAutoStt(bool enabled) {
+    http.patch(
+      Uri.parse('$serverUrl/auto-stt'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'enabled': enabled}),
+    ).timeout(const Duration(seconds: 5)).catchError((_) {});
+  }
 
   // ── 녹음 시작 ────────────────────────────────────────────────────
   Future<void> startListening() async {
@@ -357,6 +379,16 @@ class PromptEarService extends ChangeNotifier with WidgetsBindingObserver {
     final source      = primary['source']    as String? ?? 'yamnet';
     final confidence  = (primary['confidence'] as num?)?.toDouble() ?? 0.0;
 
+    // Auto-STT 결과가 있으면 우선 처리
+    final sttResult = result['stt_result'] as Map<String, dynamic>?;
+    if (sttResult != null && sttResult['triggered'] == true) {
+      final text = (sttResult['text'] as String?)?.trim() ?? '';
+      if (text.isNotEmpty) {
+        lastAutoSttText = text;
+        notifyListeners();
+      }
+    }
+
     // 진동이 발생한 것(shouldAlert=true)은 항상 기록.
     // 진동 없는 탐지는 P(Alert) >= 50% 일 때만 기록 — 그 미만은 대부분 오탐.
     if (!shouldAlert && pAlert < 0.50) return;
@@ -481,6 +513,11 @@ class PromptEarService extends ChangeNotifier with WidgetsBindingObserver {
   // ── 알림 목록 초기화 ─────────────────────────────────────────────
   void clearAlerts() {
     alerts.clear();
+    notifyListeners();
+  }
+
+  void clearAutoSttText() {
+    lastAutoSttText = null;
     notifyListeners();
   }
 

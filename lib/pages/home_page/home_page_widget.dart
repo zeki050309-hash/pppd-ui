@@ -225,10 +225,102 @@ class _HomePageWidgetState extends State<HomePageWidget> {
                             ],
                           ),
                         ],
+
+                        // ── Auto-STT 토글 ──────────────────────────────
+                        const SizedBox(height: 14),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.record_voice_over_rounded,
+                                  size: 16, color: Colors.white),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  '자동 STT',
+                                  style: pppdText(size: 13, color: Colors.white,
+                                      weight: FontWeight.w700),
+                                ),
+                              ),
+                              Text(
+                                svc.autoSttEnabled ? '켜짐' : '꺼짐',
+                                style: pppdText(size: 11, color: Colors.white70),
+                              ),
+                              const SizedBox(width: 6),
+                              Transform.scale(
+                                scale: 0.8,
+                                child: Switch(
+                                  value: svc.autoSttEnabled,
+                                  onChanged: svc.serverConnected
+                                      ? (v) => svc.setAutoStt(v)
+                                      : null,
+                                  activeColor: Colors.white,
+                                  activeTrackColor: Colors.white38,
+                                  inactiveThumbColor: Colors.white54,
+                                  inactiveTrackColor: Colors.white24,
+                                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 16),
+
+                  // ── Auto-STT 결과 카드 ─────────────────────────────
+                  if (svc.lastAutoSttText != null) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(18),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: const Color(0xFF7B61FF).withOpacity(0.35), width: 1.5),
+                        boxShadow: const [BoxShadow(color: Color(0x147B61FF), blurRadius: 16, offset: Offset(0, 8))],
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: 40, height: 40,
+                            decoration: BoxDecoration(
+                              color: PppdColors.softPurple,
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: const Icon(Icons.record_voice_over_rounded,
+                                color: PppdColors.purple, size: 20),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('자동 STT',
+                                    style: pppdText(size: 11, color: PppdColors.purple,
+                                        weight: FontWeight.w700)),
+                                const SizedBox(height: 4),
+                                SelectableText(
+                                  svc.lastAutoSttText!,
+                                  style: pppdText(size: 16, weight: FontWeight.w600, height: 1.45),
+                                ),
+                              ],
+                            ),
+                          ),
+                          GestureDetector(
+                            onTap: () => svc.clearAutoSttText(),
+                            child: const Icon(Icons.close_rounded, size: 18, color: PppdColors.muted),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
 
                   // ── 최신 감지 결과 ─────────────────────────────────
                   if (latest != null) ...[
